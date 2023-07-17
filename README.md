@@ -6,3 +6,5 @@
 
 github packages sdk version 1.0.0
 
+发布的packages都是core 和 dynamic module下的，coding module没有对应的packages，但是core和dynamic依赖coding
+
