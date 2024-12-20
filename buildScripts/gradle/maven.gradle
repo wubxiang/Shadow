@@ -90,7 +90,7 @@ def sourceJar(String name, String path) {
     }
 }
 
-def publicationVersion = '1.0.0'
+def publicationVersion = '1.1.0'
 def coreGroupId = 'com.tencent.shadow.core'
 def corePath = 'projects/sdk/core'
 def dynamicGroupId = 'com.tencent.shadow.dynamic'
@@ -115,12 +115,29 @@ publishing {
                 def root = asNode()
                 def dependencies = root.appendNode('dependencies')
                 dependencies.append(getDependencyNode('compile', 'org.jetbrains.kotlin', 'kotlin-stdlib-jdk7', kotlin_version))
+                dependencies.append(getDependencyNode('compile', 'com.googlecode.json-simple', 'json-simple', json_simple_version))
                 dependencies.append(getDependencyNode('compile', coreGroupId, 'transform-kit', publicationVersion))
                 dependencies.append(getDependencyNode('compile', coreGroupId, 'transform', publicationVersion))
                 dependencies.append(getDependencyNode('compile', coreGroupId, 'runtime', publicationVersion))
                 dependencies.append(getDependencyNode('compile', coreGroupId, 'activity-container', publicationVersion))
                 dependencies.append(getDependencyNode('compile', coreGroupId, 'manifest-parser', publicationVersion))
 
+                def scm = root.appendNode('scm')
+                setScm(scm)
+            }
+        }
+        // Plugin Marker Artifacts
+        // https://docs.gradle.org/current/userguide/plugins.html#sec:plugin_markers
+        pluginMarker(MavenPublication) {
+            def pluginId = 'com.tencent.shadow.plugin'
+            groupId pluginId
+            artifactId pluginId + '.gradle.plugin'
+            version publicationVersion
+
+            pom.withXml {
+                def root = asNode()
+                def dependencies = root.appendNode('dependencies')
+                dependencies.append(getDependencyNode('compile', coreGroupId, 'gradle-plugin', publicationVersion))
                 def scm = root.appendNode('scm')
                 setScm(scm)
             }
@@ -470,7 +487,7 @@ publishing {
             name = "GitHubPackages"
             credentials {
                 username = "wubxiang"
-                password = "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"
+                password = "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"
             }
             url "https://maven.pkg.github.com/wubxiang/Shadow"
         }
