@@ -18,12 +18,17 @@
 
 package com.tencent.shadow.core.gradle
 
+import com.android.build.api.artifact.ScopedArtifact
+import com.android.build.api.variant.ApplicationAndroidComponentsExtension
+import com.android.build.api.variant.ScopedArtifacts
 import com.android.build.gradle.AppExtension
 import com.android.build.gradle.BaseExtension
 import com.android.build.gradle.api.ApplicationVariant
 import com.android.sdklib.AndroidVersion.VersionCodes
 import com.tencent.shadow.core.gradle.extensions.PackagePluginExtension
 import com.tencent.shadow.core.manifest_parser.generatePluginManifest
+import com.tencent.shadow.core.transform.DeprecatedTransformWrapper
+import com.tencent.shadow.core.transform.GradleTransformWrapper
 import com.tencent.shadow.core.transform.ShadowTransform
 import com.tencent.shadow.core.transform_kit.AndroidClassPoolBuilder
 import com.tencent.shadow.core.transform_kit.ClassPoolBuilder
@@ -51,11 +56,43 @@ class ShadowPlugin : Plugin<Project> {
 
         val shadowExtension = project.extensions.create("shadow", ShadowExtension::class.java)
         if (!project.hasProperty("disable_shadow_transform")) {
-            baseExtension.registerTransform(ShadowTransform(
+            val shadowTransform = ShadowTransform(
                 project,
                 lateInitBuilder,
                 { shadowExtension.transformConfig.useHostContext }
-            ))
+            )
+            if (agpCompat.hasDeprecatedTransformApi()) {
+                baseExtension.registerTransform(
+                    DeprecatedTransformWrapper(
+                        project,
+                        shadowTransform
+                    )
+                )
+            } else {
+                val androidComponentsExtension =
+                    project.extensions.getByName("androidComponents") as ApplicationAndroidComponentsExtension
+                androidComponentsExtension.onVariants(
+                    selector = androidComponentsExtension.selector()
+                        .withFlavor(
+                            ShadowTransform.DimensionName
+                                    to ShadowTransform.ApplyShadowTransformFlavorName
+                        )
+                ) { variant ->
+                    val taskProvider = project.tasks.register(
+                        "${variant.name}ShadowTransform",
+                        GradleTransformWrapper::class.java,
+                        shadowTransform
+                    )
+                    variant.artifacts.forScope(ScopedArtifacts.Scope.ALL)
+                        .use<GradleTransformWrapper>(taskProvider)
+                        .toTransform(
+                            ScopedArtifact.CLASSES,
+                            GradleTransformWrapper::allJars,
+                            GradleTransformWrapper::allDirectories,
+                            GradleTransformWrapper::output
+                        )
+                }
+            }
         }
 
         addFlavorForTransform(baseExtension)
@@ -204,26 +241,12 @@ class ShadowPlugin : Plugin<Project> {
                 it.outputs.file(decodeXml).withPropertyName("decodeXml")
 
                 it.doLast {
-                    val jarPath = File(project.locateApkanalyzerResultPath().readText())
-                    val tempCL = URLClassLoader(arrayOf(jarPath.toURL()), contextClassLoader)
-                    val binaryXmlParserClass =
-                        tempCL.loadClass("com.android.tools.apk.analyzer.BinaryXmlParser")
-                    val decodeXmlMethod = binaryXmlParserClass.getDeclaredMethod(
-                        "decodeXml",
-                        String::class.java,
-                        ByteArray::class.java
-                    )
-
                     val zipFile = ZipFile(processedResFile)
                     val binaryXml = zipFile.getInputStream(
                         zipFile.getEntry("AndroidManifest.xml")
                     ).readBytes()
 
-                    val outputXmlBytes = decodeXmlMethod.invoke(
-                        null,
-                        "AndroidManifest.xml",
-                        binaryXml
-                    ) as ByteArray
+                    val outputXmlBytes = decodeXml(project, binaryXml)
                     decodeXml.parentFile.mkdirs()
                     decodeXml.writeBytes(outputXmlBytes)
                 }
@@ -254,6 +277,50 @@ class ShadowPlugin : Plugin<Project> {
         val relativePath =
             project.projectDir.toPath().relativize(pluginManifestSourceDir.toPath()).toString()
         (javacTask as JavaCompile).source(project.fileTree(relativePath))
+    }
+
+    /**
+     * 反射apkanalyzer中的BinaryXmlParser类的decodeXml方法
+     */
+    @Suppress("PrivateApi")
+    private fun decodeXml(project: Project, binaryXml: ByteArray): ByteArray {
+        val jarPath = File(project.locateApkanalyzerResultPath().readText())
+        val tempCL = URLClassLoader(arrayOf(jarPath.toURL()), contextClassLoader)
+        val binaryXmlParserClass =
+            tempCL.loadClass("com.android.tools.apk.analyzer.BinaryXmlParser")
+        return try {
+            decodeXmlMethodV1(binaryXmlParserClass, binaryXml)
+        } catch (ignored: Exception) {
+            decodeXmlMethodV2(binaryXmlParserClass, binaryXml)
+        }
+    }
+
+    private fun decodeXmlMethodV1(binaryXmlParserClass: Class<*>, binaryXml: ByteArray): ByteArray {
+        val decodeXmlMethod = binaryXmlParserClass.getDeclaredMethod(
+            "decodeXml",
+            String::class.java,
+            ByteArray::class.java
+        )
+        return decodeXmlMethod.invoke(
+            null,
+            "AndroidManifest.xml",
+            binaryXml
+        ) as ByteArray
+    }
+
+    /**
+     * 新版本代码中删掉了一个String参数，这个参数原来只用于log输出了
+     * https://cs.android.com/android-studio/platform/tools/base/+/6a81855c2fa102ae4532ad9a645e40177770a26a:apkparser/analyzer/src/main/java/com/android/tools/apk/analyzer/BinaryXmlParser.java;dlc=598c38100e4fb2b001385faea994fcb54cc515b1
+     */
+    private fun decodeXmlMethodV2(binaryXmlParserClass: Class<*>, binaryXml: ByteArray): ByteArray {
+        val decodeXmlMethod = binaryXmlParserClass.getDeclaredMethod(
+            "decodeXml",
+            ByteArray::class.java
+        )
+        return decodeXmlMethod.invoke(
+            null,
+            binaryXml
+        ) as ByteArray
     }
 
     /**
